@@ -3,13 +3,14 @@
     "name": "字幕生成与翻译",
     "description": "使用whisper自动生成视频字幕，使用百度翻译将字幕翻译成中文。",
     "labels": "字幕",
-    "version": "1.0.0",
+    "version": "1.1",
     "icon": "Baidu_C.png",
     "author": "tianlingzi",
     "level": 2,
     "v2": true,
     "history": {
-      "v1.0.0": "支持whisper语音识别和百度翻译API"
+      "v1.0.0": "支持whisper语音识别和百度翻译API",
+      "v1.1": "无关紧要的url链接修复"
     }
   }
 }

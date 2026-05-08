@@ -66,7 +66,7 @@ class BaiduSub(_PluginBase):
     # 主题色
     plugin_color = "#2C4F7E"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "tianlingzi"
     # 作者主页
@@ -1412,7 +1412,7 @@ class BaiduSub(_PluginBase):
                                             {
                                                 'component': 'a',
                                                 'props': {
-                                                    'href': 'https://github.com/tianlingzi/MoviePilot-Plugins/blob/main/plugins/baidusub/README.md',
+                                                    'href': 'https://github.com/tianlingzi/MoviePilot-Plugins/blob/main/plugins.v2/baidusub/README.md',
                                                     'target': '_blank'
                                                 },
                                                 'content': [
