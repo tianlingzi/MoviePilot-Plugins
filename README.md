@@ -4,6 +4,10 @@
 
 基于 [autosubV2](https://github.com/TimoYoung/MoviePilot-Plugins) 修改并修改翻译后端，感谢原作者
 
+<br />
+
+安装说明：有个bug解决不了，就是在线安装的版本不会自动加载，需要重启moviepilot后，在搜索那里可以看到一个已经下载到本地的”字幕生成与翻译“，点击安装就可以启用插件了。目前使用正常。
+
 # MoviePilot-Plugin-Market
 
 MoviePilot 官方插件仓库，也是 MoviePilot 插件市场默认读取的插件索引与源码仓库： <https://github.com/jxxghp/MoviePilot-Plugins>
