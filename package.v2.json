@@ -3,7 +3,7 @@
         "name": "字幕生成与机器翻译",
         "description": "使用 faster-whisper 自动生成视频字幕，并支持百度翻译、火山引擎翻译将英文字幕等翻译成中文；支持强制翻译功能，忽略已有字幕检查直接处理。",
         "labels": "字幕,翻译,机器翻译,whisper",
-        "version": "1.1",
+        "version": "1.2",
         "icon": "agentresourceofficer.png",
         "author": "tianlingzi",
         "author_url": "https://www.tianlingzi.top/archives/264/",
@@ -11,7 +11,8 @@
         "v2": true,
         "history": {
             "v1.0": "初始版本：支持 faster-whisper 语音识别生成字幕、百度翻译与火山引擎机器翻译将字幕翻译成中文、批量翻译、字幕源语言偏好、媒体入库自动执行、手动执行一次及强制翻译功能",
-            "v1.1": "修复部分问题"
+            "v1.1": "修复部分问题",
+            "v1.2": "修复翻译问题，重写api"
         }
     }
 }

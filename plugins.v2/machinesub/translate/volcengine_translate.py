@@ -56,8 +56,9 @@ def _get_signing_secret_key_v4(sk, date, region, service):
 
 class VolcengineTranslate:
     def __init__(self, access_key: str = None, secret_key: str = None):
-        self._access_key = access_key
-        self._secret_key = secret_key
+        # 二次防御：去除首尾空白（复制粘贴常见问题）
+        self._access_key = access_key.strip() if access_key else None
+        self._secret_key = secret_key.strip() if secret_key else None
         self._region = "cn-north-1"
         self._service = "translate"
         self._version = "2020-06-01"
@@ -82,9 +83,14 @@ class VolcengineTranslate:
             "Version": self._version
         }
 
+        # 关键修复：Content-Type 必须在计算签名之前就放入 headers 中，
+        # 否则 signed_headers_dict 不包含 content-type，
+        # 但实际请求发送时会带 Content-Type，服务端重算 canonical request 时
+        # 会包含 content-type，导致签名不匹配（SignatureDoesNotMatch）。
         headers = {
             "Host": self._host,
-            "X-Date": amz_date
+            "X-Date": amz_date,
+            "Content-Type": "application/json",
         }
 
         body_hash = _sha256(body)
@@ -130,7 +136,11 @@ class VolcengineTranslate:
 
         authorization_header = f"{algorithm} Credential={self._access_key}/{credential_scope}, SignedHeaders={signed_headers_str}, Signature={sign}"
         headers['Authorization'] = authorization_header
-        headers['Content-Type'] = 'application/json'
+
+        logger.debug(
+            "[Volcengine] 请求签名详情：host=%s, action=%s, signed_headers=%s, credential_scope=%s, body_hash=%s, text_len=%s",
+            self._host, action, signed_headers_str, credential_scope, body_hash, len(text)
+        )
 
         url = f"https://{self._host}/"
         response = requests.post(url, headers=headers, params=query_params, data=body, timeout=30)
@@ -139,13 +149,30 @@ class VolcengineTranslate:
             result = response.json()
             error = result.get('ResponseMetadata', {}).get('Error')
             if error:
-                return False, f"API错误 {error.get('Code')}: {error.get('Message')}"
+                # 签名失败时补充上下文，便于排查
+                err_code = error.get('Code')
+                err_msg = error.get('Message')
+                if err_code == 'SignatureDoesNotMatch':
+                    logger.error(
+                        "[Volcengine] 签名不匹配。请检查：1) AK/SK 是否正确（是否有多余空格）；"
+                        "2) 本地系统时间是否与 UTC 一致；3) SecretKey 是否为火山引擎控制台的 SK。"
+                        "当前 AK 前4位=%s...，Date=%s",
+                        (self._access_key[:4] if self._access_key else ''),
+                        amz_date
+                    )
+                return False, f"API错误 {err_code}: {err_msg}"
             translations = result.get('TranslationList', [])
             if translations:
                 translated_text = translations[0].get('Translation', '')
                 if translated_text:
                     return True, translated_text.strip()
-        return False, f"请求失败: {response.status_code}"
+            return False, "返回体中没有 TranslationList"
+        # 非 200 时补充响应文本
+        try:
+            raw_text = response.text[:300]
+        except Exception:
+            raw_text = ''
+        return False, f"请求失败: HTTP {response.status_code} {raw_text}"
 
     def translate_to_zh(self, text: str, context: str = None, max_retries: int = 3):
         """

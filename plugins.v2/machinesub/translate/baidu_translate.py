@@ -11,8 +11,9 @@ class BaiduTranslate:
     _api_url: str = "https://fanyi-api.baidu.com/api/trans/vip/translate"
 
     def __init__(self, appid: str = None, secret_key: str = None):
-        self._appid = appid
-        self._secret_key = secret_key
+        # 二次防御：去除首尾空白（复制粘贴常见问题）
+        self._appid = appid.strip() if appid else None
+        self._secret_key = secret_key.strip() if secret_key else None
 
     def _generate_sign(self, query: str, salt: str) -> str:
         """
