@@ -66,9 +66,9 @@ class MachineSub(_PluginBase):
     # 插件图标
     plugin_icon = "agentresourceofficer.png"
     # 主题色
-    plugin_color = "#2C4F7E"
+    plugin_color = "#87CEEB"
     # 插件版本
-    plugin_version = "1.4"
+    plugin_version = "1.5"
     # 插件作者
     plugin_author = "tianlingzi"
     # 作者主页
@@ -105,6 +105,7 @@ class MachineSub(_PluginBase):
     _context_window = None
     _max_retries = None
     _enable_merge = None
+    _subtitle_mode = None
     _enable_asr = None
     _auto_detect_language = None
     _huggingface_proxy = None
@@ -155,6 +156,13 @@ class MachineSub(_PluginBase):
         self._context_window = int(config.get('context_window')) if config.get('context_window') else 0
         self._max_retries = int(config.get('max_retries')) if config.get('max_retries') else 3
         self._enable_merge = config.get('enable_merge', False)
+        # 字幕输出模式：
+        # single    = 单字幕：分别保留原声字幕（带标签）和纯中文字幕两个文件
+        # bilingual = 双语字幕：仅保留中文+原文合并的一个双语字幕，删除机器生成的原声字幕
+        # both      = 均保存：原声字幕 + 纯中文字幕 + 双语字幕全部保留
+        self._subtitle_mode = config.get('subtitle_mode', 'bilingual')
+        if self._subtitle_mode not in ('single', 'bilingual', 'both'):
+            self._subtitle_mode = 'bilingual'
 
         if self._translate_zh:
             if self._translate_service == 'baidu':
@@ -375,6 +383,8 @@ class MachineSub(_PluginBase):
         file_name = os.path.basename(video_file)
 
         try:
+            # 字幕文件命名标签：强制翻译模式用"强制"，正常模式用"机翻"
+            sub_tag = "强制" if force_translate else "机翻"
             logger.info(f"开始处理文件：{video_file} ..." + ("（强制翻译模式）" if force_translate else ""))
             # 判断目的字幕（和内嵌）是否已存在（强制翻译模式下跳过此检查）
             if not force_translate:
@@ -384,7 +394,7 @@ class MachineSub(_PluginBase):
             else:
                 logger.info(f"强制翻译模式：跳过已有字幕检查，直接处理视频")
             # 生成字幕
-            ret, lang, gen_sub_path = self.__generate_subtitle(video_file, file_path, self._enable_asr)
+            ret, lang, gen_sub_path = self.__generate_subtitle(video_file, file_path, self._enable_asr, sub_tag)
             if not ret:
                 message = f" 媒体: {file_name}\n 生成字幕失败，跳过后续处理"
                 if self._send_notify:
@@ -392,15 +402,58 @@ class MachineSub(_PluginBase):
                 return TaskStatus.FAILED
 
             if self._translate_zh:
-                # 翻译字幕
+                # 翻译字幕（先拿到双语条目数组，然后按三种模式保存）
                 logger.info(f"开始翻译字幕为中文 ...")
-                self.__translate_zh_subtitle(lang, gen_sub_path, f"{file_path}.zh.机翻.srt")
-                logger.info(f"翻译字幕完成：{file_name}.zh.机翻.srt")
+                zh_sub_base = f"{file_path}.zh.{sub_tag}"
+                # 统一翻译一次，得到双语字幕条目
+                processed = self.__translate_zh_subtitle(lang, gen_sub_path)
+
+                # 判断 gen_sub_path 是否为机器生成的（包含 机翻/强制 标签）
+                # 只有机器生成的原字幕才会在双语模式下被删除；用户原外挂字幕不动
+                gen_sub_str = str(gen_sub_path)
+                is_machine_source = (f".{sub_tag}.srt" in gen_sub_str)
+
+                mode = self._subtitle_mode
+                output_files = []
+                if mode == 'single':
+                    # 单字幕：原声字幕（保留已存在的 gen_sub_path）+ 纯中文字幕（新文件）
+                    zh_only_subs = self.__bilingual_to_chinese_only(processed)
+                    zh_only_path = f"{zh_sub_base}.srt"
+                    self.__save_srt(zh_only_path, zh_only_subs)
+                    output_files.append(os.path.basename(zh_only_path))
+                    if os.path.exists(gen_sub_str):
+                        output_files.append(os.path.basename(gen_sub_str))
+                elif mode == 'bilingual':
+                    # 双语字幕：仅保留双语合并字幕；机器生成的原音字幕删除
+                    bilingual_path = f"{zh_sub_base}.srt"
+                    self.__save_srt(bilingual_path, processed)
+                    output_files.append(os.path.basename(bilingual_path))
+                    if is_machine_source and os.path.exists(gen_sub_str):
+                        try:
+                            os.remove(gen_sub_str)
+                            logger.info(f"双语模式：已删除机器生成的原音字幕 {os.path.basename(gen_sub_str)}")
+                        except Exception as e:
+                            logger.debug(f"删除原音字幕失败 {gen_sub_str}: {e}")
+                else:  # both
+                    # 均保存：原声 + 纯中文 + 双语 三个文件全部保留
+                    bilingual_path = f"{zh_sub_base}.双语.srt"
+                    self.__save_srt(bilingual_path, processed)
+                    output_files.append(os.path.basename(bilingual_path))
+
+                    zh_only_subs = self.__bilingual_to_chinese_only(processed)
+                    zh_only_path = f"{zh_sub_base}.srt"
+                    self.__save_srt(zh_only_path, zh_only_subs)
+                    output_files.append(os.path.basename(zh_only_path))
+
+                    if os.path.exists(gen_sub_str):
+                        output_files.append(os.path.basename(gen_sub_str))
+
+                logger.info(f"翻译字幕完成（{mode}），输出文件：{', '.join(output_files)}")
 
             end_time = time.time()
             message = f" 媒体: {file_name}\n 处理完成\n 字幕原始语言: {lang}\n "
             if self._translate_zh:
-                message += f"字幕翻译语言: zh\n "
+                message += f"字幕翻译语言: zh, 模式: {self._subtitle_mode}\n "
             message += f"耗时：{round(end_time - start_time, 2)}秒"
             logger.info(f"机器字幕生成 处理完成：{message}")
             if self._send_notify:
@@ -498,11 +551,12 @@ class MachineSub(_PluginBase):
             logger.error(f"faster-whisper 处理异常：{e}")
             return False, None
 
-    def __generate_subtitle(self, video_file, subtitle_file, enable_asr=True):
+    def __generate_subtitle(self, video_file, subtitle_file, enable_asr=True, sub_tag="机翻"):
         """
         生成字幕
         :param video_file: 视频文件
         :param subtitle_file: 字幕文件, 不包含后缀
+        :param sub_tag: 字幕命名标签（机翻/强制），用于机器生成的字幕文件名
         :return: 生成成功返回True，字幕语言,字幕路径，否则返回False, None, None
         """
         # 获取文件元数据
@@ -585,7 +639,7 @@ class MachineSub(_PluginBase):
         if extract_subtitle:
             inner_sub_lang = iso639.to_iso639_1(inner_sub_lang) \
                 if (inner_sub_lang and iso639.find(inner_sub_lang) and iso639.to_iso639_1(inner_sub_lang)) else 'und'
-            extracted_sub_path = f"{subtitle_file}.{inner_sub_lang}.srt"
+            extracted_sub_path = f"{subtitle_file}.{inner_sub_lang}.{sub_tag}.srt"
             Ffmpeg().extract_subtitle_from_video(video_file, extracted_sub_path, subtitle_index)
             logger.info(f"提取字幕完成：{extracted_sub_path}")
             return True, inner_sub_lang, extracted_sub_path
@@ -617,18 +671,28 @@ class MachineSub(_PluginBase):
 
             # 生成字幕
             logger.info(f"开始生成字幕, 语言 {audio_lang} ...")
-            ret, lang = self.__do_speech_recognition(audio_lang, audio_file.name)
-            if ret:
-                logger.info(f"生成字幕成功，原始语言：{lang}")
-                # 复制字幕文件
-                SystemUtils.copy(Path(f"{audio_file.name}.srt"), Path(f"{subtitle_file}.{lang}.srt"))
-                logger.info(f"复制字幕文件：{subtitle_file}.{lang}.srt")
-                # 删除临时文件
-                os.remove(f"{audio_file.name}.srt")
-                return ret, lang, Path(f"{subtitle_file}.{lang}.srt")
-            else:
-                logger.error("生成字幕失败")
-                return False, None, None
+            # 临时 .srt 文件路径（__do_speech_recognition 内部会生成）
+            temp_srt_path = f"{audio_file.name}.srt"
+            try:
+                ret, lang = self.__do_speech_recognition(audio_lang, audio_file.name)
+                if ret:
+                    logger.info(f"生成字幕成功，原始语言：{lang}")
+                    # 复制字幕文件（机器生成的字幕加上标签：机翻/强制）
+                    final_sub_path = f"{subtitle_file}.{lang}.{sub_tag}.srt"
+                    SystemUtils.copy(Path(temp_srt_path), Path(final_sub_path))
+                    logger.info(f"复制字幕文件：{final_sub_path}")
+                    return ret, lang, Path(final_sub_path)
+                else:
+                    logger.error("生成字幕失败")
+                    return False, None, None
+            finally:
+                # 确保临时 .srt 文件被清理（无论成功/失败/异常）
+                # .wav 文件由 tempfile 的 delete=True 自动清理
+                if os.path.exists(temp_srt_path):
+                    try:
+                        os.remove(temp_srt_path)
+                    except Exception as e:
+                        logger.debug(f"清理临时字幕文件失败 {temp_srt_path}: {e}")
 
     @staticmethod
     def __get_library_files(in_path, exclude_path=None):
@@ -671,6 +735,24 @@ class MachineSub(_PluginBase):
         """
         with open(file_path, 'w', encoding="utf8") as f:
             f.write(srt.compose(srt_data))
+
+    @staticmethod
+    def __bilingual_to_chinese_only(bilingual_subs: list) -> list:
+        """
+        将双语字幕（content = "中文\n原文"）转成仅中文的字幕。
+        前提：翻译结果内部的换行已被替换为空格，保证第一个 \n 之前即为完整译文。
+        """
+        result = []
+        for sub in bilingual_subs:
+            # 用浅拷贝避免影响原数组
+            content = sub.content or ""
+            first_nl = content.find('\n')
+            if first_nl >= 0:
+                zh = content[:first_nl].strip()
+            else:
+                zh = content.strip()
+            result.append(srt.Subtitle(index=sub.index, start=sub.start, end=sub.end, content=zh))
+        return result
 
     def __merge_srt(self, subtitle_data):
         """
@@ -835,11 +917,11 @@ class MachineSub(_PluginBase):
 
         return "\n".join(context)
 
-    def __process_items(self, all_subs: list, items: list) -> list:
+    def __process_items(self, all_subs: list, items: list, bilingual: bool = True) -> list:
         """统一处理入口（支持批量和单条）"""
         if self._enable_batch and len(items) > 1:
-            return self.__process_batch(all_subs, items)
-        return [self.__process_single(all_subs, item) for item in items]
+            return self.__process_batch(all_subs, items, bilingual)
+        return [self.__process_single(all_subs, item, bilingual) for item in items]
 
     def __translate_to_zh(self, text: str, context: str = None) -> str:
         if self._event.is_set():
@@ -849,7 +931,7 @@ class MachineSub(_PluginBase):
         else:
             return self._baidu_translate.translate_to_zh(text, context, max_retries=self._max_retries)
 
-    def __process_batch(self, all_subs: list, batch: list) -> list:
+    def __process_batch(self, all_subs: list, batch: list, bilingual: bool = True) -> list:
         """批量处理逻辑"""
         indices = [all_subs.index(item) for item in batch]
         context = self.__get_context(all_subs, indices, is_batch=True) if self._context_window > 0 else None
@@ -867,29 +949,41 @@ class MachineSub(_PluginBase):
                 raise Exception(f"批次行数不匹配 {len(translated)}/{len(batch)}")
 
             for item, trans in zip(batch, translated):
-                item.content = f"{trans}\n{item.content}"
+                # 双语模式：中文 + 原文；单字幕模式：仅中文
+                item.content = f"{trans}\n{item.content}" if bilingual else trans
             self._stats['batch_success'] += len(batch)
             return batch
         except Exception as e:
             logger.warning(f"批次翻译失败（{str(e)}），降级到单行匹配...")
             self._stats['batch_fail'] += 1
-            return [self.__process_single(all_subs, item) for item in batch]
+            return [self.__process_single(all_subs, item, bilingual) for item in batch]
 
-    def __process_single(self, all_subs: List[srt.Subtitle], item: srt.Subtitle) -> srt.Subtitle:
+    def __process_single(self, all_subs: List[srt.Subtitle], item: srt.Subtitle,
+                         bilingual: bool = True) -> srt.Subtitle:
         """单条处理逻辑"""
         idx = all_subs.index(item)
         context = self.__get_context(all_subs, [idx], is_batch=False) if self._context_window > 0 else None
         success, trans = self.__translate_to_zh(item.content, context)
 
         if success:
-            item.content = f"{trans}\n{item.content}"
+            # 双语模式：中文 + 原文；单字幕模式：仅中文
+            item.content = f"{trans}\n{item.content}" if bilingual else trans
             self._stats['line_fallback'] += 1
             return item
         else:
-            item.content = f"[翻译失败]\n{item.content}"
+            item.content = f"[翻译失败]\n{item.content}" if bilingual else "[翻译失败]"
             return item
 
-    def __translate_zh_subtitle(self, source_lang: str, source_subtitle: str, dest_subtitle: str):
+    def __translate_zh_subtitle(self, source_lang: str, source_subtitle: str,
+                                dest_bilingual: str = None) -> list:
+        """
+        翻译字幕为中文，返回双语字幕条目数组（每条 content = "中文\n原文"）。
+        不负责保存文件，保存逻辑由调用方按三种模式处理。
+        :param source_lang: 源字幕语言
+        :param source_subtitle: 源字幕文件路径
+        :param dest_bilingual: 若提供则保存一份双语字幕到此路径（方便直接取用）
+        :return: processed 双语字幕条目 list（可再加工）
+        """
         self._stats = {'total': 0, 'batch_success': 0, 'batch_fail': 0, 'line_fallback': 0}
         subs = self.__load_srt(source_subtitle)
         if source_lang in ["en", "eng"] and self._enable_merge:
@@ -900,9 +994,12 @@ class MachineSub(_PluginBase):
 
         if not valid_subs:
             logger.warning("字幕文件为空或没有有效的字幕条目，跳过翻译")
-            # 创建一个空的字幕文件
-            self.__save_srt(dest_subtitle, [])
-            return
+            if dest_bilingual:
+                self.__save_srt(dest_bilingual, [])
+            return []
+
+        # 始终按 bilingual=True 翻译，保证每个条目里中文+原文都在，后续可灵活切分
+        _bilingual = True
 
         self._stats['total'] = len(valid_subs)
         processed = []
@@ -912,14 +1009,16 @@ class MachineSub(_PluginBase):
             current_batch.append(item)
 
             if len(current_batch) >= self._batch_size:
-                processed += self.__process_items(valid_subs, current_batch)
+                processed += self.__process_items(valid_subs, current_batch, _bilingual)
                 current_batch = []
                 logger.info(f"进度: {len(processed)}/{len(valid_subs)}")
 
         if current_batch:
-            processed += self.__process_items(valid_subs, current_batch)
+            processed += self.__process_items(valid_subs, current_batch, _bilingual)
 
-        self.__save_srt(dest_subtitle, processed)
+        # 若指定了双语输出路径，则直接保存（调用方后续再决定是否留此文件）
+        if dest_bilingual:
+            self.__save_srt(dest_bilingual, processed)
 
         success_rate = (self._stats['batch_success'] / self._stats['total'] * 100) if self._stats['total'] > 0 else 0.0
 
@@ -930,6 +1029,8 @@ class MachineSub(_PluginBase):
     批次失败: {self._stats['batch_fail']}
     行补偿翻译: {self._stats['line_fallback']}
             """)
+
+        return processed
 
     @staticmethod
     def __external_subtitle_exists(video_file, prefer_langs=None, only_srt=False, strict=True):
@@ -947,7 +1048,7 @@ class MachineSub(_PluginBase):
         if prefer_langs and type(prefer_langs) == str:
             prefer_langs = [prefer_langs]
 
-        metadata_flags = ["default", "forced", "foreign", "sdh", "cc", "hi", "机翻"]
+        metadata_flags = ["default", "forced", "foreign", "sdh", "cc", "hi", "机翻", "强制", "双语"]
         if only_srt:
             subtitle_extensions = [".srt"]
         else:
@@ -1223,6 +1324,29 @@ class MachineSub(_PluginBase):
                                             'model': 'translate_zh',
                                             'label': '翻译成中文',
                                             'hint': '使用机器翻译将字幕翻译成中文'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6,
+                                    'v-show': 'translate_zh'
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'model': 'subtitle_mode',
+                                            'label': '字幕输出模式',
+                                            'hint': '单字幕=原声字幕+纯中文；双语=仅中文+原文合并；均保存=三个文件都保留',
+                                            'items': [
+                                                {'title': '单字幕（原声字幕 + 纯中文字幕，两个文件）', 'value': 'single'},
+                                                {'title': '双语字幕（中文+原文合并，一个文件）', 'value': 'bilingual'},
+                                                {'title': '均保存（原声 + 纯中文 + 双语，三个文件）', 'value': 'both'}
+                                            ]
                                         }
                                     }
                                 ]
@@ -1606,6 +1730,7 @@ class MachineSub(_PluginBase):
             "context_window": 0,
             "max_retries": 3,
             "enable_merge": False,
+            "subtitle_mode": "bilingual",
             "enable_batch": True,
             "batch_size": 10,
         }
