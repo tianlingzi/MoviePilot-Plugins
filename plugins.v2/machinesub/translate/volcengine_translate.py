@@ -113,8 +113,11 @@ class VolcengineTranslate:
             "Authorization": authorization,
         }
 
-        url = f"https://{self._host}/"
-        response = requests.post(url, headers=headers, params=query_params, data=body, timeout=30)
+        # 关键：不用 requests 的 params 参数（其编码可能与签名的 canonical_querystring 不一致），
+        # 直接把 query string 拼到 URL 里，确保与签名计算时完全一致
+        url = f"https://{self._host}/?{canonical_querystring}"
+
+        response = requests.post(url, headers=headers, data=body.encode('utf-8'), timeout=30)
 
         if response.status_code == 200:
             result = response.json()

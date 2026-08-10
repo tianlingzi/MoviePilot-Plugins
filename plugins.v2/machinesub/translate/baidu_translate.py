@@ -70,7 +70,9 @@ class BaiduTranslate:
                 else:
                     translations = result.get('trans_result', [])
                     if translations:
-                        translated_text = '\n'.join([item.get('dst', '') for item in translations])
+                        # 去除每条翻译结果内部的换行符，确保返回行数与输入行数一致
+                        # 否则批量模式下 split('\n') 会拆出多余行导致"行数不匹配"
+                        translated_text = '\n'.join([item.get('dst', '').replace('\n', ' ') for item in translations])
                         return True, translated_text.strip()
                     else:
                         last_error = "未获取到翻译结果"

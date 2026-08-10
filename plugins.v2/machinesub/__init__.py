@@ -68,7 +68,7 @@ class MachineSub(_PluginBase):
     # 主题色
     plugin_color = "#2C4F7E"
     # 插件版本
-    plugin_version = "1.3"
+    plugin_version = "1.4"
     # 插件作者
     plugin_author = "tianlingzi"
     # 作者主页
@@ -157,17 +157,9 @@ class MachineSub(_PluginBase):
         self._enable_merge = config.get('enable_merge', False)
 
         if self._translate_zh:
-            # 规范化翻译服务取值，避免异常值导致逻辑混乱
-            if self._translate_service not in ('baidu', 'volcengine'):
-                logger.warning(f"翻译服务取值异常：{self._translate_service}，已回退为baidu")
-                self._translate_service = 'baidu'
-
-            logger.info(f"翻译启用，当前选择的翻译服务：{self._translate_service}")
-
             if self._translate_service == 'baidu':
                 baidu_appid = config.get('baidu_appid')
                 baidu_secret_key = config.get('baidu_secret_key')
-                # 去除首尾空白（复制粘贴常见）
                 if baidu_appid:
                     baidu_appid = baidu_appid.strip()
                 if baidu_secret_key:
@@ -175,12 +167,10 @@ class MachineSub(_PluginBase):
                 if not baidu_appid or not baidu_secret_key:
                     logger.error(f"翻译依赖于百度翻译，请先配置appid和secret_key")
                     return
-                logger.info(f"初始化百度翻译实例，appid长度：{len(baidu_appid)}")
                 self._baidu_translate = BaiduTranslate(appid=baidu_appid, secret_key=baidu_secret_key)
             elif self._translate_service == 'volcengine':
                 volc_access_key = config.get('volc_access_key')
                 volc_secret_key = config.get('volc_secret_key')
-                # 去除首尾空白（复制粘贴常见）
                 if volc_access_key:
                     volc_access_key = volc_access_key.strip()
                 if volc_secret_key:
@@ -188,7 +178,6 @@ class MachineSub(_PluginBase):
                 if not volc_access_key or not volc_secret_key:
                     logger.error(f"翻译依赖于火山引擎翻译，请先配置access_key和secret_key")
                     return
-                logger.info(f"初始化火山引擎翻译实例，access_key长度：{len(volc_access_key)}，secret_key长度：{len(volc_secret_key)}")
                 self._volcengine_translate = VolcengineTranslate(
                     access_key=volc_access_key,
                     secret_key=volc_secret_key
@@ -855,19 +844,18 @@ class MachineSub(_PluginBase):
     def __translate_to_zh(self, text: str, context: str = None) -> str:
         if self._event.is_set():
             raise UserInterruptException("用户中断当前任务")
-        # 打印调用日志，便于确认当前选择的翻译服务生效
         if self._translate_service == 'volcengine':
-            logger.debug(f"[翻译调用] 服务=火山引擎, 输入字数={len(text)}")
             return self._volcengine_translate.translate_to_zh(text, context, max_retries=self._max_retries)
         else:
-            logger.debug(f"[翻译调用] 服务=百度, 输入字数={len(text)}")
             return self._baidu_translate.translate_to_zh(text, context, max_retries=self._max_retries)
 
     def __process_batch(self, all_subs: list, batch: list) -> list:
         """批量处理逻辑"""
         indices = [all_subs.index(item) for item in batch]
         context = self.__get_context(all_subs, indices, is_batch=True) if self._context_window > 0 else None
-        batch_text = '\n'.join([item.content for item in batch])
+        # 关键：去除每条字幕内部的换行符，确保 batch_text 的行数 == batch 大小
+        # 否则多行字幕会让百度翻译返回的行数对不上，触发"行数不匹配"
+        batch_text = '\n'.join([item.content.replace('\n', ' ').strip() for item in batch])
 
         try:
             ret, result = self.__translate_to_zh(batch_text, context)
