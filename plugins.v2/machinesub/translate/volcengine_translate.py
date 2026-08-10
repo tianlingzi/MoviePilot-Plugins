@@ -10,32 +10,22 @@ from functools import reduce
 from app.log import logger
 
 
-def _hmac_sha256(key, content):
-    return hmac.new(key, content.encode('utf-8'), hashlib.sha256).digest()
+def _hmac_sha256(key, msg):
+    """HMAC-SHA256，key 可为 bytes 或 str，msg 为 str。返回 bytes。"""
+    if isinstance(key, str):
+        key = key.encode('utf-8')
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
 
 
-def _sha256(content):
+def _sha256_hex(content):
+    """SHA256 十六进制摘要。"""
     if isinstance(content, str):
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()
-    else:
-        return hashlib.sha256(content).hexdigest()
-
-
-def _to_hex(content):
-    lst = []
-    for ch in content:
-        hv = hex(ch).replace('0x', '')
-        if len(hv) == 1:
-            hv = '0' + hv
-        lst.append(hv)
-    return reduce(lambda x, y: x + y, lst)
-
-
-def _norm_uri(path):
-    return quote(path).replace('%2F', '/').replace('+', '%20')
+        content = content.encode('utf-8')
+    return hashlib.sha256(content).hexdigest()
 
 
 def _norm_query(params):
+    """规范化查询字符串（按 key 升序，RFC3986 编码）。"""
     query = ''
     for key in sorted(params.keys()):
         if type(params[key]) == list:
@@ -43,12 +33,12 @@ def _norm_query(params):
                 query = query + quote(key, safe='-_.~') + '=' + quote(k, safe='-_.~') + '&'
         else:
             query = query + quote(key, safe='-_.~') + '=' + quote(str(params[key]), safe='-_.~') + '&'
-    query = query[:-1]
-    return query.replace('+', '%20')
+    return query[:-1].replace('+', '%20')
 
 
-def _get_signing_secret_key_v4(sk, date, region, service):
-    kdate = _hmac_sha256(sk.encode('utf-8'), date)
+def _get_signing_key(sk, date_stamp, region, service):
+    """派生签名密钥（已用官方示例值验证正确，使用 raw bytes 作为下一步 key）。"""
+    kdate = _hmac_sha256(sk, date_stamp)
     kregion = _hmac_sha256(kdate, region)
     kservice = _hmac_sha256(kregion, service)
     return _hmac_sha256(kservice, 'request')
@@ -56,7 +46,7 @@ def _get_signing_secret_key_v4(sk, date, region, service):
 
 class VolcengineTranslate:
     def __init__(self, access_key: str = None, secret_key: str = None):
-        # 二次防御：去除首尾空白（复制粘贴常见问题）
+        # 去除首尾空白（复制粘贴常见问题）
         self._access_key = access_key.strip() if access_key else None
         self._secret_key = secret_key.strip() if secret_key else None
         self._region = "cn-north-1"
@@ -77,70 +67,51 @@ class VolcengineTranslate:
             "TextList": [text]
         }
         body = json.dumps(payload, separators=(',', ':'))
+        body_hash = _sha256_hex(body)
 
         query_params = {
             "Action": action,
             "Version": self._version
         }
-
-        # 关键修复：Content-Type 必须在计算签名之前就放入 headers 中，
-        # 否则 signed_headers_dict 不包含 content-type，
-        # 但实际请求发送时会带 Content-Type，服务端重算 canonical request 时
-        # 会包含 content-type，导致签名不匹配（SignatureDoesNotMatch）。
-        headers = {
-            "Host": self._host,
-            "X-Date": amz_date,
-            "Content-Type": "application/json",
-        }
-
-        body_hash = _sha256(body)
-        headers['X-Content-Sha256'] = body_hash
-
-        signed_headers_dict = dict()
-        for key in headers:
-            if key in ['Content-Type', 'Content-Md5', 'Host'] or key.startswith('X-'):
-                signed_headers_dict[key.lower()] = headers[key]
-
-        if 'host' in signed_headers_dict:
-            v = signed_headers_dict['host']
-            if v.find(':') != -1:
-                split = v.split(':')
-                port = split[1]
-                if str(port) == '80' or str(port) == '443':
-                    signed_headers_dict['host'] = split[0]
-
-        signed_str = ''
-        for key in sorted(signed_headers_dict.keys()):
-            signed_str += key + ':' + signed_headers_dict[key] + '\n'
-
-        signed_headers_str = ';'.join(sorted(signed_headers_dict.keys()))
-
-        canonical_uri = '/'
         canonical_querystring = _norm_query(query_params)
+
+        # 按官方文档：SignedHeaders 只签 host;x-date
+        # 不签 content-type，不签 x-content-sha256，也不发送 X-Content-Sha256 头
+        canonical_headers = f"host:{self._host}\nx-date:{amz_date}\n"
+        signed_headers = "host;x-date"
+
         canonical_request = '\n'.join([
             method,
-            _norm_uri(canonical_uri),
+            '/',
             canonical_querystring,
-            signed_str,
-            signed_headers_str,
+            canonical_headers,
+            signed_headers,
             body_hash
         ])
-        hashed_canonical_request = _sha256(canonical_request)
 
-        algorithm = "HMAC-SHA256"
         credential_scope = '/'.join([date_stamp, self._region, self._service, 'request'])
-        signing_str = '\n'.join([algorithm, amz_date, credential_scope, hashed_canonical_request])
+        string_to_sign = '\n'.join([
+            "HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            _sha256_hex(canonical_request)
+        ])
 
-        signing_key = _get_signing_secret_key_v4(self._secret_key, date_stamp, self._region, self._service)
-        sign = _to_hex(_hmac_sha256(signing_key, signing_str))
+        signing_key = _get_signing_key(self._secret_key, date_stamp, self._region, self._service)
+        signature = _hmac_sha256(signing_key, string_to_sign).hex()
 
-        authorization_header = f"{algorithm} Credential={self._access_key}/{credential_scope}, SignedHeaders={signed_headers_str}, Signature={sign}"
-        headers['Authorization'] = authorization_header
-
-        logger.debug(
-            "[Volcengine] 请求签名详情：host=%s, action=%s, signed_headers=%s, credential_scope=%s, body_hash=%s, text_len=%s",
-            self._host, action, signed_headers_str, credential_scope, body_hash, len(text)
+        authorization = (
+            f"HMAC-SHA256 Credential={self._access_key}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
         )
+
+        # 实际发送的 headers：Content-Type 要发送但不参与签名
+        headers = {
+            "Host": self._host,
+            "Content-Type": "application/json",
+            "X-Date": amz_date,
+            "Authorization": authorization,
+        }
 
         url = f"https://{self._host}/"
         response = requests.post(url, headers=headers, params=query_params, data=body, timeout=30)
@@ -149,14 +120,13 @@ class VolcengineTranslate:
             result = response.json()
             error = result.get('ResponseMetadata', {}).get('Error')
             if error:
-                # 签名失败时补充上下文，便于排查
                 err_code = error.get('Code')
                 err_msg = error.get('Message')
                 if err_code == 'SignatureDoesNotMatch':
                     logger.error(
-                        "[Volcengine] 签名不匹配。请检查：1) AK/SK 是否正确（是否有多余空格）；"
+                        "[Volcengine] 签名不匹配。请检查：1) AK/SK 是否正确；"
                         "2) 本地系统时间是否与 UTC 一致；3) SecretKey 是否为火山引擎控制台的 SK。"
-                        "当前 AK 前4位=%s...，Date=%s",
+                        "AK 前4位=%s..., Date=%s",
                         (self._access_key[:4] if self._access_key else ''),
                         amz_date
                     )
@@ -167,7 +137,6 @@ class VolcengineTranslate:
                 if translated_text:
                     return True, translated_text.strip()
             return False, "返回体中没有 TranslationList"
-        # 非 200 时补充响应文本
         try:
             raw_text = response.text[:300]
         except Exception:
