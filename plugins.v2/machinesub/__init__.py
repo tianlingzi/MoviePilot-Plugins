@@ -60,19 +60,19 @@ class TaskItem:
 
 class MachineSub(_PluginBase):
     # 插件名称
-    plugin_name = "机器字幕生成与翻译"
+    plugin_name = "字幕生成与机器翻译"
     # 插件描述
-    plugin_desc = "使用 faster-whisper 自动生成视频字幕，并支持百度翻译、火山引擎翻译将字幕翻译成中文；支持强制翻译功能。"
+    plugin_desc = "使用 faster-whisper 自动生成视频字幕，并支持百度翻译、火山引擎翻译将英文字幕等翻译成中文；支持强制翻译功能，忽略已有字幕检查直接处理。"
     # 插件图标
-    plugin_icon = "machinesub.png"
+    plugin_icon = "agentresourceofficer.png"
     # 主题色
     plugin_color = "#2C4F7E"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
-    plugin_author = "machinesub"
+    plugin_author = "tianlingzi"
     # 作者主页
-    author_url = ""
+    author_url = "https://www.tianlingzi.top/archives/264/"
     # 插件配置项ID前缀
     plugin_config_prefix = "machinesub"
     # 加载顺序
